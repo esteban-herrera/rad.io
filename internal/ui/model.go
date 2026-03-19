@@ -24,22 +24,6 @@ const (
 	stateEditTags
 )
 
-var (
-	titleStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205"))
-	dividerStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-	selectedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("86")).Bold(true)
-	normalStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	playingStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("226"))
-	helpStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-	inputStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
-	errorStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
-	vizStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("82"))
-	vizPauseStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
-	metaStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("75"))
-	filterStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("33")).Bold(true)
-	headerStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("69"))
-	radioStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("178"))
-)
 
 type tickMsg time.Time
 
@@ -72,7 +56,8 @@ type Model struct {
 	tickCount      int
 	ticking        bool
 	nowPlayingMeta string
-	vizMode        int             // 0 = bars (default), 1 = radio
+	vizMode        int             // 0 = bars, 1 = radio, 2 = dancer
+	themeIdx       int             // index into themes slice; 0 = Default
 	expandedTags   map[string]bool // which tag sections are open
 	showList       bool            // whether the station list is visible
 	showHelp       bool            // whether key hints are shown
@@ -290,7 +275,10 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.player.ToggleMute()
 
 	case "v":
-		m.vizMode = 1 - m.vizMode
+		m.vizMode = (m.vizMode + 1) % 3
+
+	case "T":
+		m.themeIdx = (m.themeIdx + 1) % len(themes)
 
 	// list-only keys — ignored when list is hidden
 	case "up", "k":
@@ -523,7 +511,7 @@ func renderViz(tickCount, numBars int) string {
 	return sb.String()
 }
 
-func renderRadio(tickCount int, paused bool) string {
+func renderRadio(tickCount int, paused bool, style lipgloss.Style) string {
 	radioLines := [4]string{
 		"┌─────────┐",
 		"│ (( ◉ )) │",
@@ -546,7 +534,40 @@ func renderRadio(tickCount int, paused bool) string {
 			noteOffset := ((tickCount + phases[row]) / 2) % 12
 			content = radioLines[row] + strings.Repeat(" ", 1+noteOffset) + string(notes[row])
 		}
-		sb.WriteString(radioStyle.Render("  "+content) + "\n")
+		sb.WriteString(style.Render("  "+content) + "\n")
+	}
+	return sb.String()
+}
+
+func renderDancer(tickCount int, paused bool, style lipgloss.Style) string {
+	frames := [4][3]string{
+		{` \o/`, `  |`, ` / \`},
+		{`  o`, ` \|`, ` / \`},
+		{`  o/`, `  |\`, ` / \`},
+		{`  o`, `  |/`, ` / \`},
+	}
+	notes := [4]rune{'♪', '♫', '♩', '♬'}
+
+	var frame [3]string
+	var noteRow0, noteRow1 string
+	if paused {
+		frame = [3]string{`  o`, `  |`, ` / \`}
+		noteRow1 = "  ⏸"
+	} else {
+		f := (tickCount / 6) % 4
+		frame = frames[f]
+		noteRow0 = " " + string(notes[f])
+	}
+
+	var sb strings.Builder
+	for row := 0; row < 3; row++ {
+		line := frame[row]
+		if row == 0 {
+			line += noteRow0
+		} else if row == 1 {
+			line += noteRow1
+		}
+		sb.WriteString(style.Render("  "+line) + "\n")
 	}
 	return sb.String()
 }
@@ -561,6 +582,7 @@ func renderVolBar(vol int) string {
 }
 
 func (m Model) View() string {
+	th := themes[m.themeIdx]
 	var b strings.Builder
 
 	// Derive sizing from terminal width
@@ -579,12 +601,15 @@ func (m Model) View() string {
 	if divLen < 4 {
 		divLen = 4
 	}
-	div := dividerStyle.Render("  " + strings.Repeat("─", divLen))
+	div := th.divider.Render("  " + strings.Repeat("─", divLen))
 
-	// Title + optional filter badge
-	b.WriteString(titleStyle.Render("  rad.io"))
+	// Title + optional theme badge + optional filter badge
+	b.WriteString(th.title.Render("  rad.io"))
+	if th.Name != "Default" {
+		b.WriteString("  " + th.help.Render("["+th.Name+"]"))
+	}
 	if m.tagFilter != "" {
-		b.WriteString("  " + filterStyle.Render("[#"+m.tagFilter+"]"))
+		b.WriteString("  " + th.filter.Render("[#"+m.tagFilter+"]"))
 	}
 	b.WriteString("\n")
 	b.WriteString(div + "\n")
@@ -596,7 +621,7 @@ func (m Model) View() string {
 		if showingList {
 			items := m.buildListItems()
 			if len(m.stations) == 0 {
-				b.WriteString(helpStyle.Render("  No stations. Press 'a' to add one.") + "\n")
+				b.WriteString(th.help.Render("  No stations. Press 'a' to add one.") + "\n")
 			} else {
 				for i, item := range items {
 					if item.isHeader {
@@ -607,9 +632,9 @@ func (m Model) View() string {
 						tag := truncate(item.tag, nameMax)
 						line := "  " + arrow + tag
 						if i == m.cursor {
-							b.WriteString(selectedStyle.Render(line) + "\n")
+							b.WriteString(th.selected.Render(line) + "\n")
 						} else {
-							b.WriteString(headerStyle.Render(line) + "\n")
+							b.WriteString(th.header.Render(line) + "\n")
 						}
 						continue
 					}
@@ -626,11 +651,11 @@ func (m Model) View() string {
 						name = truncate(s.Name, nameMax)
 					}
 					if i == m.cursor {
-						b.WriteString(selectedStyle.Render(prefix+name) + "\n")
+						b.WriteString(th.selected.Render(prefix+name) + "\n")
 					} else if isPlaying {
-						b.WriteString(playingStyle.Render(prefix+name) + "\n")
+						b.WriteString(th.playing.Render(prefix+name) + "\n")
 					} else {
-						b.WriteString(normalStyle.Render(prefix+name) + "\n")
+						b.WriteString(th.normal.Render(prefix+name) + "\n")
 					}
 				}
 			}
@@ -639,18 +664,21 @@ func (m Model) View() string {
 
 		// Visualization + playing info
 		if m.player.IsPlaying() {
-			if m.vizMode == 0 {
+			switch m.vizMode {
+			case 0:
 				if m.player.IsPaused() {
-					b.WriteString("  " + vizPauseStyle.Render("⏸ "+strings.Repeat(string(vizBars[0]), numBars)) + "\n")
+					b.WriteString("  " + th.vizPause.Render("⏸ "+strings.Repeat(string(vizBars[0]), numBars)) + "\n")
 				} else {
-					b.WriteString("  " + vizStyle.Render(renderViz(m.tickCount, numBars)) + "\n")
+					b.WriteString("  " + th.viz.Render(renderViz(m.tickCount, numBars)) + "\n")
 				}
-			} else {
-				b.WriteString(renderRadio(m.tickCount, m.player.IsPaused()))
+			case 1:
+				b.WriteString(renderRadio(m.tickCount, m.player.IsPaused(), th.radio))
+			case 2:
+				b.WriteString(renderDancer(m.tickCount, m.player.IsPaused(), th.dancer))
 			}
 
 			// Scrolling station name
-			b.WriteString(playingStyle.Render("  ♪ "+marquee(m.nowPlaying, nameMax, m.tickCount)) + "\n")
+			b.WriteString(th.playing.Render("  ♪ "+marquee(m.nowPlaying, nameMax, m.tickCount)) + "\n")
 
 			// Vol line
 			vol := m.player.Volume()
@@ -658,32 +686,32 @@ func (m Model) View() string {
 			if m.player.IsMuted() {
 				volLine += "  [muted]"
 			}
-			b.WriteString(playingStyle.Render("  "+volLine) + "\n")
+			b.WriteString(th.playing.Render("  "+volLine) + "\n")
 
 			// Scrolling meta
 			if m.nowPlayingMeta != "" {
-				b.WriteString(metaStyle.Render("  ♬ "+marquee(m.nowPlayingMeta, nameMax, m.tickCount)) + "\n")
+				b.WriteString(th.meta.Render("  ♬ "+marquee(m.nowPlayingMeta, nameMax, m.tickCount)) + "\n")
 			}
 		}
 
 		if m.errMsg != "" {
-			b.WriteString(errorStyle.Render("  "+m.errMsg) + "\n")
+			b.WriteString(th.err.Render("  "+m.errMsg) + "\n")
 		}
 
 		if m.state == stateEditTags {
-			b.WriteString(inputStyle.Render("  Tags (comma-separated):") + "\n")
+			b.WriteString(th.input.Render("  Tags (comma-separated):") + "\n")
 			b.WriteString("  " + m.input.View() + "\n")
-			b.WriteString(helpStyle.Render("  enter:save  esc:cancel") + "\n")
+			b.WriteString(th.help.Render("  enter:save  esc:cancel") + "\n")
 		} else if m.showHelp {
 			if !showingList {
-				b.WriteString(helpStyle.Render("  l:list  r:rnd  v:viz  h:help  q:quit") + "\n")
-				b.WriteString(helpStyle.Render("  space:pause  m:mute  +/-:vol  s:stop") + "\n")
+				b.WriteString(th.help.Render("  l:list  r:rnd  v:viz  T:theme  h:help  q:quit") + "\n")
+				b.WriteString(th.help.Render("  space:pause  m:mute  +/-:vol  s:stop") + "\n")
 			} else {
-				b.WriteString(helpStyle.Render("  ↵:open/play  a:add  d:del  t:tags  f:filter") + "\n")
-				b.WriteString(helpStyle.Render("  r:rnd  l:hide  v:viz  space:pause  +/-:vol  q:quit") + "\n")
+				b.WriteString(th.help.Render("  ↵:open/play  a:add  d:del  t:tags  f:filter") + "\n")
+				b.WriteString(th.help.Render("  r:rnd  l:hide  v:viz  T:theme  space:pause  +/-:vol  q:quit") + "\n")
 			}
 		} else {
-			b.WriteString(helpStyle.Render("  h:help") + "\n")
+			b.WriteString(th.help.Render("  h:help") + "\n")
 		}
 
 	case stateAddName, stateAddURL:
@@ -691,9 +719,9 @@ func (m Model) View() string {
 		if m.state == stateAddURL {
 			prompt = "Stream URL:"
 		}
-		b.WriteString(inputStyle.Render("  "+prompt) + "\n")
+		b.WriteString(th.input.Render("  "+prompt) + "\n")
 		b.WriteString("  " + m.input.View() + "\n")
-		b.WriteString(helpStyle.Render("  enter:confirm  esc:cancel") + "\n")
+		b.WriteString(th.help.Render("  enter:confirm  esc:cancel") + "\n")
 	}
 
 	return b.String()
