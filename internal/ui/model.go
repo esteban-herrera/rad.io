@@ -56,12 +56,13 @@ type Model struct {
 	tickCount      int
 	ticking        bool
 	nowPlayingMeta string
-	vizMode        int             // 0 = bars, 1 = radio, 2 = dancer
+	vizMode        int             // 0=bars 1=radio 2=dancer 3=wave 4=pulse 5=cradle
 	themeIdx       int             // index into themes slice; 0 = Default
 	expandedTags   map[string]bool // which tag sections are open
 	showList       bool            // whether the station list is visible
 	showHelp       bool            // whether key hints are shown
 	width          int             // terminal width
+	volChangedAt   int             // tickCount when vol last changed; -1 = never
 }
 
 func New(stations []store.Station, p *player.Player) Model {
@@ -75,6 +76,7 @@ func New(stations []store.Station, p *player.Player) Model {
 		showList:     true,
 		showHelp:     false,
 		width:        40,
+		volChangedAt: -1,
 	}
 }
 
@@ -267,15 +269,18 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "+", "=":
 		m.player.VolumeUp()
+		m.volChangedAt = m.tickCount
 
 	case "-":
 		m.player.VolumeDown()
+		m.volChangedAt = m.tickCount
 
 	case "m":
 		m.player.ToggleMute()
+		m.volChangedAt = m.tickCount
 
 	case "v":
-		m.vizMode = (m.vizMode + 1) % 3
+		m.vizMode = (m.vizMode + 1) % 6
 
 	case "T":
 		m.themeIdx = (m.themeIdx + 1) % len(themes)
@@ -581,6 +586,95 @@ func renderVolBar(vol int) string {
 	return strings.Repeat("█", filled) + strings.Repeat("░", barLen-filled)
 }
 
+// renderWave draws a 2-row oscilloscope. Positive amplitude fills the top row,
+// negative fills the bottom row.
+func renderWave(tickCount, numBars int, style lipgloss.Style) string {
+	t := float64(tickCount)
+	topRow := make([]rune, numBars)
+	botRow := make([]rune, numBars)
+	for x := 0; x < numBars; x++ {
+		fx := float64(x)
+		amp := (math.Sin(t*0.18+fx*0.6) + math.Sin(t*0.09+fx*0.3+1.1)) / 2
+		idx := int(math.Abs(amp) * 7.5)
+		if idx > 7 {
+			idx = 7
+		}
+		if amp > 0 {
+			topRow[x] = vizBars[idx]
+			botRow[x] = ' '
+		} else {
+			topRow[x] = ' '
+			botRow[x] = vizBars[idx]
+		}
+	}
+	return style.Render("  "+string(topRow)) + "\n" + style.Render("  "+string(botRow)) + "\n"
+}
+
+// renderPulse draws a single-row sonar ring expanding from the centre.
+func renderPulse(tickCount, numBars int, paused bool, style lipgloss.Style) string {
+	center := numBars / 2
+	var sb strings.Builder
+	if paused {
+		for x := 0; x < numBars; x++ {
+			if x == center {
+				sb.WriteRune('⏸')
+			} else {
+				sb.WriteByte(' ')
+			}
+		}
+	} else {
+		radius := tickCount % (numBars / 2)
+		for x := 0; x < numBars; x++ {
+			dist := x - center
+			if dist < 0 {
+				dist = -dist
+			}
+			switch {
+			case dist == radius && radius == 0:
+				sb.WriteRune('●')
+			case dist == radius:
+				sb.WriteRune('◉')
+			default:
+				sb.WriteByte(' ')
+			}
+		}
+	}
+	return "  " + style.Render(sb.String()) + "\n"
+}
+
+// renderCradle draws a 2-row Newton's Cradle with non-uniform frame timing.
+func renderCradle(tickCount int, paused bool, style lipgloss.Style) string {
+	frames := [4][2]string{
+		{` /\|||||`, `o  ooooo`},
+		{`  \|||||`, ` ooooo `},
+		{` \|||||\`, `ooooo  o`},
+		{`  \|||||`, ` ooooo `},
+	}
+	var frame [2]string
+	if paused {
+		frame = frames[1]
+		frame[0] += " ⏸"
+	} else {
+		phase := tickCount % 16
+		var f int
+		switch {
+		case phase < 6:
+			f = 0
+		case phase < 8:
+			f = 1
+		case phase < 14:
+			f = 2
+		default:
+			f = 3
+		}
+		frame = frames[f]
+	}
+	var sb strings.Builder
+	sb.WriteString(style.Render("  "+frame[0]) + "\n")
+	sb.WriteString(style.Render("  "+frame[1]) + "\n")
+	return sb.String()
+}
+
 func (m Model) View() string {
 	th := themes[m.themeIdx]
 	var b strings.Builder
@@ -675,18 +769,31 @@ func (m Model) View() string {
 				b.WriteString(renderRadio(m.tickCount, m.player.IsPaused(), th.radio))
 			case 2:
 				b.WriteString(renderDancer(m.tickCount, m.player.IsPaused(), th.dancer))
+			case 3: // waveform — 2 rows; paused shows flat line
+				if m.player.IsPaused() {
+					b.WriteString("  " + th.vizPause.Render("⏸ "+strings.Repeat(string(vizBars[0]), numBars)) + "\n")
+					b.WriteString("  " + th.vizPause.Render(strings.Repeat(" ", numBars)) + "\n")
+				} else {
+					b.WriteString(renderWave(m.tickCount, numBars, th.viz))
+				}
+			case 4: // pulse — 1 row expanding sonar ring
+				b.WriteString(renderPulse(m.tickCount, numBars, m.player.IsPaused(), th.viz))
+			case 5: // newton's cradle — 2 rows
+				b.WriteString(renderCradle(m.tickCount, m.player.IsPaused(), th.dancer))
 			}
 
 			// Scrolling station name
 			b.WriteString(th.playing.Render("  ♪ "+marquee(m.nowPlaying, nameMax, m.tickCount)) + "\n")
 
-			// Vol line
-			vol := m.player.Volume()
-			volLine := fmt.Sprintf("vol:%s %d%%", renderVolBar(vol), vol)
-			if m.player.IsMuted() {
-				volLine += "  [muted]"
+			// Vol line — only shown for ~2.4 s after last change
+			if m.volChangedAt >= 0 && m.tickCount-m.volChangedAt < 30 {
+				vol := m.player.Volume()
+				volLine := fmt.Sprintf("vol:%s %d%%", renderVolBar(vol), vol)
+				if m.player.IsMuted() {
+					volLine += "  [muted]"
+				}
+				b.WriteString(th.playing.Render("  "+volLine) + "\n")
 			}
-			b.WriteString(th.playing.Render("  "+volLine) + "\n")
 
 			// Scrolling meta
 			if m.nowPlayingMeta != "" {

@@ -100,11 +100,9 @@ Stations are stored in `~/.config/rad.io/stations.json` as a plain JSON array:
 
 ```json
 [
-  {
-    "name": "NTS Radio 1",
-    "url": "https://stream-relay-geo.ntslive.net/stream",
-    "tags": ["nts", "eclectic"]
-  }
+  { "name": "KEXP",       "url": "https://kexp.streamguys1.com/kexp160.aac",            "tags": ["favorites"] },
+  { "name": "Folk Alley", "url": "http://freshgrass.streamguys1.com/folkalley-128mp3",  "tags": ["folk", "favorites"] },
+  { "name": "NTS Radio 1","url": "https://stream-relay-geo.ntslive.net/stream",          "tags": ["eclectic"] }
 ]
 ```
 
