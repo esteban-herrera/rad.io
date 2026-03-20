@@ -39,7 +39,7 @@ A minimal terminal radio player. Browse internet radio stations grouped by tag, 
 ### Quick install (macOS / Linux)
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/estie/rad.io/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/esteban-herrera/rad.io/main/install.sh | sh
 ```
 
 The script checks for mpv and Go, installs mpv via Homebrew or your system package manager if missing, then builds and installs `rad.io` to `~/.local/bin`.
